@@ -1,28 +1,28 @@
-import {Child, Children, Init, Issue, Mapped, Node, Property, registerNodeFactory} from "@strumenta/tylasu";
-import {Parser} from "@strumenta/tylasu/parsing";
+import {ASTNode, Child, Children, Issue, Node, Attribute} from "@strumenta/tylasu";
+import {ASTTransformer} from "@strumenta/tylasu";
 import {SimpleLangLexer} from "./parser/SimpleLangLexer";
-import {Lexer} from "antlr4ts/Lexer";
-import {CharStream} from "antlr4ts/CharStream";
+import {Lexer} from "antlr4ng";
+import {CharStream} from "antlr4ng";
 import {
     BinaryExprContext,
     CompilationUnitContext,
-    ExpressionContext,
     LiteralExprContext,
     SetStmtContext,
     SimpleLangParser
 } from "./parser/SimpleLangParser";
-import {TokenStream} from "antlr4ts/TokenStream";
+import {TokenStream, CommonTokenStream} from "antlr4ng";
 
+@ASTNode("", "CompilationUnit")
 export class CompilationUnit extends Node {
     @Children()
-    @Mapped("statement")
     statements: Statement[];
 }
 
 export abstract class Statement extends Node {}
 
+@ASTNode("", "SetStatement")
 export class SetStatement extends Statement {
-    @Property() variable: string;
+    @Attribute() variable: string;
     @Child() expression: Expression;
 
     constructor(variable: string) {
@@ -31,11 +31,12 @@ export class SetStatement extends Statement {
     }
 }
 
-export abstract class Type extends Node {}
-export class IntegerType extends Type {}
-export class DecimalType extends Type {}
-export class StringType extends Type {}
-export class BooleanType extends Type {}
+export enum Type {
+    IntegerType = "IntegerType",
+    DecimalType = "DecimalType",
+    StringType = "StringType",
+    BooleanType = "BooleanType"
+}
 
 export abstract class Operator {}
 export abstract class BinaryOperator extends Operator {}
@@ -45,11 +46,11 @@ export class MultiplicationOperator extends BinaryOperator {}
 export class DivisionOperator extends BinaryOperator {}
 
 export abstract class Expression extends Node {
-    @Property() type: Type;
+    @Attribute() type: Type;
 }
-
+@ASTNode("", "LiteralExpression")
 export class LiteralExpression extends Expression {
-    @Property() value: string;
+    @Attribute() value: string;
 
     constructor(value: string, type: Type) {
         super();
@@ -57,58 +58,70 @@ export class LiteralExpression extends Expression {
         this.type = type;
     }
 }
-
+@ASTNode("", "BinaryExpression")
 export class BinaryExpression extends Expression {
-    @Property() operator: BinaryOperator;
-    @Child() @Mapped("_left") left: Expression;
-    @Child() @Mapped("_right") right: Expression;
+    @Attribute() operator: BinaryOperator;
+    @Child() left: Expression;
+    @Child() right: Expression;
 
     constructor(operator: BinaryOperator) {
         super();
         this.operator = operator;
     }
 }
+const transformer = new ASTTransformer()
 
-registerNodeFactory(CompilationUnitContext, () => { return new CompilationUnit(); });
+transformer.registerNodeFactory(CompilationUnitContext, () => {
+    return new CompilationUnit();
+})
+.withChild({ source: "statement", target: "statements" });
 
-registerNodeFactory(SetStmtContext, (setStmt: SetStmtContext) => {
-    return new SetStatement(setStmt.ID().text);
-});
+transformer.registerNodeFactory(SetStmtContext, (setStmt: SetStmtContext) => {
+    return new SetStatement(setStmt.ID().getText());
+})
+.withChild({ source: "expression", target: "expression" });
 
-registerNodeFactory(LiteralExprContext, (literalExpression: LiteralExprContext) => {
+transformer.registerNodeFactory(LiteralExprContext, (literalExpression: LiteralExprContext) => {
     let type;
 
-    if (literalExpression.INT_LIT() != null) type = new IntegerType();
-    if (literalExpression.DEC_LIT() != null) type = new DecimalType();
-    if (literalExpression.STRING_LIT() != null) type = new StringType();
-    if (literalExpression.BOOLEAN_LIT() != null) type = new BooleanType();
+    if (literalExpression.INT_LIT() != null) type = Type.IntegerType;
+    else if (literalExpression.DEC_LIT() != null) type = Type.DecimalType;
+    else if (literalExpression.STRING_LIT() != null) type = Type.StringType;
+    else if (literalExpression.BOOLEAN_LIT() != null) type = Type.BooleanType;
 
-   return new LiteralExpression(literalExpression.text, type);
+    return new LiteralExpression(literalExpression.getText(), type);
 });
 
-registerNodeFactory(BinaryExprContext, (binaryExpression: BinaryExprContext) => {
+transformer.registerNodeFactory(BinaryExprContext, (binaryExpression: BinaryExprContext) => {
     let operator;
 
     if (binaryExpression.PLUS() != null) operator = new SumOperator();
-    if (binaryExpression.MINUS() != null) operator = new SubtractionOperator();
-    if (binaryExpression.MULT() != null) operator = new MultiplicationOperator();
-    if (binaryExpression.DIV() != null) operator = new DivisionOperator();
+    else if (binaryExpression.MINUS() != null) operator = new SubtractionOperator();
+    else if (binaryExpression.MULT() != null) operator = new MultiplicationOperator();
+    else if (binaryExpression.DIV() != null) operator = new DivisionOperator();
 
     return new BinaryExpression(operator);
-});
+})
+.withChild({ source: "_left", target: "left" })
+.withChild({ source: "_right", target: "right" });
 
-export class SLParser extends Parser<CompilationUnit, SimpleLangParser, CompilationUnitContext> {
-    protected createANTLRLexer(inputStream: CharStream): Lexer {
+export class SLParser {
+    createANTLRLexer(inputStream: CharStream): Lexer {
         return new SimpleLangLexer(inputStream);
     }
 
-    protected createANTLRParser(tokenStream: TokenStream): SimpleLangParser {
+    createANTLRParser(tokenStream: TokenStream): SimpleLangParser {
         return new SimpleLangParser(tokenStream);
     }
-
-    protected parseTreeToAst(
+    parse(text: string) {
+        const lexer = this.createANTLRLexer(CharStream.fromString(text))
+        const tokens = new CommonTokenStream(lexer);
+        const parser = this.createANTLRParser(tokens);
+        return this.parseTreeToAst(parser.compilationUnit())
+    }
+    parseTreeToAst(
         parseTreeRoot: CompilationUnitContext/*, considerPosition: boolean, issues: Issue[]*/
-    ): CompilationUnit | undefined {
-        return parseTreeRoot.toAST() as CompilationUnit;
+    ): Node {
+        return transformer.transform(parseTreeRoot)
     }
 }
